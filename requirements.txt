@@ -1,2 +1,16 @@
-pip install streamlit playwright seleniumbase
-playwright install chromium
+# Core automation
+seleniumbase
+playwright
+
+# Async support
+anyio
+
+# Data handling
+pandas
+
+# Domain parsing
+tldextract
+
+# HTTP utilities
+requests
+
