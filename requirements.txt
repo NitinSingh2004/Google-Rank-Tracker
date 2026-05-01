@@ -1,16 +1,4 @@
-# Core automation
-seleniumbase
+streamlit
 playwright
-
-# Async support
-anyio
-
-# Data handling
-pandas
-
-# Domain parsing
-tldextract
-
-# HTTP utilities
-requests
-
+seleniumbase
+fake-useragent
