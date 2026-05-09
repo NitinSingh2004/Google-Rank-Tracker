@@ -9,7 +9,6 @@ import pandas as pd
 from seleniumbase import cdp_driver
 from playwright.async_api import async_playwright
 import aiomysql
-import pymysql
 
 
 # ---------------------------------------------------
@@ -93,10 +92,10 @@ start_button = st.sidebar.button(
 # ---------------------------------------------------
 
 DB_CONFIG = {
-    "host": st.secrets["mysql"]["host"],
-    "user": st.secrets["mysql"]["user"],
-    "password": st.secrets["mysql"]["password"],
-    "db": st.secrets["mysql"]["db"],
+    "host": st.secrets["DB_HOST"],
+    "user": st.secrets["DB_USER"],
+    "password": st.secrets["DB_PASSWORD"],
+    "db": st.secrets["DB_NAME"],
 }
 
 # ---------------------------------------------------
