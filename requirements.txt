@@ -4,3 +4,4 @@ seleniumbase
 fake-useragent
 flask
 aiomysql
+cryptography
