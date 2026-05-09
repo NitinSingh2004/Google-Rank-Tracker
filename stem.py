@@ -92,12 +92,11 @@ start_button = st.sidebar.button(
 # ---------------------------------------------------
 
 DB_CONFIG = {
-    "host": "43.230.202.147",
-    "user": "ewayswork_seotoo",
-    "password": "kCPZk9wkL.1GfoZP",
-    "db": "ewayswork_seotool",
+    "host": st.secrets["mysql"]["host"],
+    "user": st.secrets["mysql"]["user"],
+    "password": st.secrets["mysql"]["password"],
+    "db": st.secrets["mysql"]["db"],
 }
-
 
 # ---------------------------------------------------
 # LIVE LOG AREA
