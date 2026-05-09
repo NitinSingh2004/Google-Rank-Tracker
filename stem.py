@@ -375,7 +375,7 @@ async def run_scraper():
             )
 
     except Exception as e:
-    st.write(e)
+        st.write(e)
 
         add_log(f"\nSCRAPER ERROR:\n{str(e)}")
 
