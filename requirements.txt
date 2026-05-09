@@ -2,3 +2,4 @@ streamlit
 playwright
 seleniumbase
 fake-useragent
+flask
