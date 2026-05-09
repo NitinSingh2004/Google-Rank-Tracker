@@ -375,9 +375,9 @@ async def run_scraper():
             )
 
     except Exception as e:
-        st.write(e)
-
         add_log(f"\nSCRAPER ERROR:\n{str(e)}")
+        if pool:
+            await update_process_status(pool, process_id, 3)
 
         if pool:
 
