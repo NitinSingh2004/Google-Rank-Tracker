@@ -3,3 +3,4 @@ playwright
 seleniumbase
 fake-useragent
 flask
+aiomysql
