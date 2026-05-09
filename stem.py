@@ -261,7 +261,7 @@ async def run_scraper():
             headless=True,
             undetected=True,
             browser_executable_path=(
-                "C:/Program Files/Google/Chrome/Application/chrome.exe"
+                "C:\Program Files\Google\Chrome\Application\chrome.exe"
             ),
             extra_params=[
                 "--no-sandbox",
