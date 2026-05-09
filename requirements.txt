@@ -1,8 +1,9 @@
 streamlit
 playwright
-seleniumbase
+
 fake-useragent
 flask
 aiomysql
 cryptography
-pymysql
+
+playwright-stealth
