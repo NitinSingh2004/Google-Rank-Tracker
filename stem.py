@@ -6,7 +6,7 @@ import random
 import uuid
 import pandas as pd
 
-from seleniumbase import cdp_driver
+from playwright_stealth import stealth_async  # NEW: Stealth plugin
 from playwright.async_api import async_playwright
 import aiomysql
 
@@ -222,17 +222,15 @@ async def bulk_insert_rankings(
 # SCRAPER
 # ---------------------------------------------------
 
+from playwright_stealth import stealth_async  # Ensure this is in requirements.txt
+
 async def run_scraper():
-
     process_id = str(uuid.uuid4())
-
     pool = None
-    driver = None
+    # 'driver' is no longer needed as we use Playwright directly
 
     try:
-
         add_log("Creating Database Pool...")
-
         pool = await aiomysql.create_pool(
             **DB_CONFIG
         )
@@ -247,47 +245,41 @@ async def run_scraper():
         keywords_data = await get_keywords(pool)
 
         if not keywords_data:
-
             add_log("No keywords found")
             return
 
-        add_log("Launching Browser...")
+        add_log("Launching Stealth Browser...")
 
         # ---------------------------------------------------
-        # START CHROME
+        # UPDATED: START PLAYWRIGHT DIRECTLY WITH STEALTH
         # ---------------------------------------------------
-
-        driver = await cdp_driver.start_async(
-            headless=True,
-            undetected=True,
-            browser_executable_path=(
-                "C:\Program Files\Google\Chrome\Application\chrome.exe"
-            ),
-            extra_params=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ]
-        )
-
-        endpoint_url = driver.get_endpoint_url()
-
         async with async_playwright() as p:
-
-            browser = await p.chromium.connect_over_cdp(
-                endpoint_url
+            # Launch Chromium (Railway/Render will find the path automatically)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ]
             )
 
-            page = browser.contexts[0].pages[0]
+            # Create a context with a real-world User-Agent
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            
+            page = await context.new_page()
+
+            # Apply stealth to hide Playwright fingerprints
+            await stealth_async(page)
 
             bulk_data = []
-
             results_table = []
 
             # ---------------------------------------------------
-            # LOOP KEYWORDS
+            # LOOP KEYWORDS (Rest of your logic remains the same)
             # ---------------------------------------------------
-
             for keyword_id, keyword, target_domain in keywords_data:
 
                 add_log(f"\nSearching Keyword: {keyword}")
@@ -305,86 +297,43 @@ async def run_scraper():
                 current_rank = 1
                 found_rank = None
 
-                for page_num in range(
-                    pages_per_keyword
-                ):
+                for page_num in range(pages_per_keyword):
+                    await asyncio.sleep(random.uniform(2, 4))
 
-                    await asyncio.sleep(
-                        random.uniform(2, 4)
-                    )
-
-                    results = await page.locator(
-                        "div[data-hveid], div.g"
-                    ).all()
+                    # Use a more reliable selector for Google results
+                    results = await page.locator("div.g").all()
 
                     for res in results:
-
+                        # Extracting link using your existing evaluate logic
                         item = await res.evaluate("""
                             (node) => {
                                 const h3 = node.querySelector('h3');
-
-                                return h3
-                                    ? {
-                                        link: node.querySelector('a')?.href
-                                      }
-                                    : null;
+                                return h3 ? { link: node.querySelector('a')?.href } : null;
                             }
                         """)
 
                         if item and item.get("link"):
-
                             link = item["link"]
+                            add_log(f"Checking Rank {current_rank}")
 
-                            add_log(
-                                f"Checking Rank {current_rank}"
-                            )
-
-                            if (
-                                target_domain.lower()
-                                in link.lower()
-                            ):
-
+                            if target_domain.lower() in link.lower():
                                 found_rank = current_rank
-
-                                add_log(
-                                    f"FOUND at Rank {current_rank}"
-                                )
-
+                                add_log(f"FOUND at Rank {current_rank}")
                                 break
-
                             current_rank += 1
 
                     if found_rank:
                         break
 
-                    next_btn = page.locator(
-                        "a#pnnext"
-                    ).first
-
+                    next_btn = page.locator("a#pnnext").first
                     if await next_btn.is_visible():
-
                         await next_btn.click()
-
-                        await page.wait_for_load_state(
-                            "domcontentloaded"
-                        )
-
+                        await page.wait_for_load_state("domcontentloaded")
                     else:
                         break
 
-                final_rank = (
-                    found_rank
-                    if found_rank
-                    else 51
-                )
-
-                bulk_data.append(
-                    (
-                        keyword_id,
-                        final_rank
-                    )
-                )
-
+                final_rank = found_rank if found_rank else 51
+                bulk_data.append((keyword_id, final_rank))
                 results_table.append({
                     "Keyword": keyword,
                     "Domain": target_domain,
@@ -394,22 +343,23 @@ async def run_scraper():
             # ---------------------------------------------------
             # INSERT DATA
             # ---------------------------------------------------
-
-            await bulk_insert_rankings(
-                pool,
-                bulk_data,
-                created_by
-            )
-
-            await update_process_status(
-                pool,
-                process_id,
-                2
-            )
-
+            await bulk_insert_rankings(pool, bulk_data, created_by)
+            await update_process_status(pool, process_id, 2)
             add_log("Scraping Completed")
-
             await browser.close()
+
+            st.subheader("Ranking Results")
+            st.dataframe(pd.DataFrame(results_table), use_container_width=True)
+
+    except Exception as e:
+        add_log(f"\nSCRAPER ERROR:\n{str(e)}")
+        if pool:
+            await update_process_status(pool, process_id, 3)
+
+    finally:
+        if pool:
+            pool.close()
+            await pool.wait_closed()
 
             # ---------------------------------------------------
             # SHOW TABLE
