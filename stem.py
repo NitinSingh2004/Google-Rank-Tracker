@@ -9,6 +9,7 @@ import pandas as pd
 from seleniumbase import cdp_driver
 from playwright.async_api import async_playwright
 import aiomysql
+import pymysql
 
 
 # ---------------------------------------------------
