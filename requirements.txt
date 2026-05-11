@@ -1,6 +1,6 @@
 streamlit
 playwright
-
+pandas
 fake-useragent
 flask
 aiomysql
