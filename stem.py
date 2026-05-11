@@ -53,7 +53,7 @@ async def get_keywords(pool):
                 WHERE krh.KeywordNo = k.KeywordID
                 AND krh.CreatedAt >= NOW() - INTERVAL 30 DAY
             ) and domain is not null
-            LIMIT 2;
+            LIMIT 20;
             """)
             return await cur.fetchall()
 
