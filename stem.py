@@ -6,6 +6,7 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 import os
 import subprocess
+import pandas as pd
 
 
 
@@ -198,7 +199,7 @@ async def run_rank_tracker(pages_per_keyword, created_by):
                     "keyword": keyword,
                     "domain": target_domain,
                     "rank": 51,
-                    "url": "Not Found"
+                   
                 })
 
             bulk_data.append((
@@ -235,7 +236,7 @@ st.title("Google Ranking Tracker - Playwright Stealth")
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
     min_value=1,
-    max_value=10,
+    max_value=6,
     value=3
 )
 
@@ -259,8 +260,12 @@ if st.button("Start Tracking"):
 
             st.success("Tracking Completed")
 
-            st.write(results)
+# Convert the list of dicts to a DataFrame
+            df = pd.DataFrame(results)
 
-        except Exception as e:
+# Display as an interactive table
+            st.dataframe(df, use_container_width=True)
 
-            st.error(f"Error: {e}")
+# Optional: Add a download button for the report
+           csv = df.to_csv(index=False).encode('utf-8')
+           st.download_button("Download Report as CSV", csv, "rank_report.csv", "text/csv")
