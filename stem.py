@@ -265,5 +265,7 @@ if st.button("Start Tracking"):
 
 # Display as an interactive table
             st.dataframe(df, use_container_width=True)
+        except Exception as e:
+            st.write(e)
 
 
