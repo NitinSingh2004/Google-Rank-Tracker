@@ -2,7 +2,21 @@ import streamlit as st
 import asyncio
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+import os
+import subprocess
+import streamlit as st
 
+# This function ensures the browser is installed only once per session
+@st.cache_resource
+def install_playwright():
+    try:
+        # Check if the browser is already present to save time
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Error installing Playwright: {e}")
+
+# Call the install function
+install_playwright()
 
 async def run_playwright():
     async with Stealth().use_async(async_playwright()) as p:
