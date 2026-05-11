@@ -267,5 +267,5 @@ if st.button("Start Tracking"):
             st.dataframe(df, use_container_width=True)
 
 # Optional: Add a download button for the report
-           csv = df.to_csv(index=False).encode('utf-8')
-           st.download_button("Download Report as CSV", csv, "rank_report.csv", "text/csv")
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Report as CSV", csv, "rank_report.csv", "text/csv")
