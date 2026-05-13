@@ -327,7 +327,7 @@ pages_per_keyword = st.number_input(
     "Pages Per Keyword",
     min_value=1,
     max_value=10,
-    value=3
+    value=5
 )
 
 created_by = st.number_input(
