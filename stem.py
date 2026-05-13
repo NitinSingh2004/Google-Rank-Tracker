@@ -326,12 +326,14 @@ fixed_number = 10
 fixed_number2=33
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
-    value=fixed_number
+    value=fixed_number,
+     disabled=True
 )
 
 created_by = st.number_input(
     "Created By",
-    value=fixed_number2
+    value=fixed_number2,
+     disabled=True
 )
 
 if st.button("Start Tracking"):
