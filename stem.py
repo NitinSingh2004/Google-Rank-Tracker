@@ -321,7 +321,7 @@ fixed_number2=33
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
     min_value=1,
-    max_value=10
+    max_value=10,
     value=fixed_number,
     
 )
