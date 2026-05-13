@@ -327,7 +327,7 @@ fixed_number2=33
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
     value=fixed_number,
-     disabled=True
+    
 )
 
 created_by = st.number_input(
