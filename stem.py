@@ -138,7 +138,7 @@ async def run_rank_tracker(pages_per_keyword, created_by):
         await insert_process(pool, process_id)
 
         keywords_data = await get_keywords(pool)
-        st.write(keywords_data["domain"])
+        st.write(keywords_data)
 
         if not keywords_data:
 
