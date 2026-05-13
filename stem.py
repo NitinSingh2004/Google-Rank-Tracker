@@ -156,7 +156,7 @@ async def run_rank_tracker(pages_per_keyword, created_by):
         async with Stealth().use_async(async_playwright()) as p:
 
             browser = await p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
