@@ -265,7 +265,7 @@ async def run_rank_tracker(pages_per_keyword, created_by):
                     results_output.append({
                         "keyword": keyword,
                         "domain": target_domain,
-                        "rank": 51,
+                        "rank": 100,
                         "url": "Not Found"
                     })
 
@@ -322,17 +322,16 @@ st.set_page_config(
 st.title(
     "Google Ranking Tracker - Playwright Stealth"
 )
-
+fixed_number = 10
+fixed_number2=33
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
-    min_value=1,
-    max_value=10,
-    value=5
+    value=fixed_number
 )
 
 created_by = st.number_input(
     "Created By",
-    value=33
+    value=fixed_number2
 )
 
 if st.button("Start Tracking"):
