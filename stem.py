@@ -292,10 +292,6 @@ async def run_rank_tracker(pages_per_keyword, created_by):
 
     except Exception as e:
 
-        # ---------------------------------------------
-        # UPDATE PROCESS ERROR
-        # ---------------------------------------------
-
         await update_process_status(
             pool,
             process_id,
@@ -311,9 +307,7 @@ async def run_rank_tracker(pages_per_keyword, created_by):
 
     return results_output
 
-# ---------------------------------------------------
-# STREAMLIT UI
-# ---------------------------------------------------
+
 
 st.set_page_config(
     page_title="Google Rank Tracker"
@@ -326,6 +320,8 @@ fixed_number = 10
 fixed_number2=33
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
+    min_value=1,
+    max_value=10
     value=fixed_number,
     
 )
