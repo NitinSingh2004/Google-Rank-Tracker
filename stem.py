@@ -261,12 +261,12 @@ async def run_rank_tracker(pages_per_keyword, created_by):
 
                 if not found_rank:
 
-                    found_rank = 51
+                    found_rank = 100
 
                     results_output.append({
                         "keyword": keyword,
                         "domain": target_domain,
-                        "rank": 100,
+                        "rank": found_rank,
                         "url": "Not Found"
                     })
 
