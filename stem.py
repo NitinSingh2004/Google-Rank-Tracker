@@ -273,7 +273,7 @@ if st.button("Start Tracking"):
         try:
 
             results = asyncio.run(
-                run_rank_tracker(
+                run_scraping_logic(
                     pages_per_keyword,
                     created_by
                 )
