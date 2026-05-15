@@ -124,7 +124,7 @@ async def bulk_insert_rankings(pool, data, created_by):
             await conn.commit()
 
 
-async def run_scraping_logic(process_id, created_by, pages_per_keyword):
+async def run_scraping_logic( pages_per_keyword,created_by,):
     driver = None
     pool = None
     results_output = [] # To return to the UI if needed
