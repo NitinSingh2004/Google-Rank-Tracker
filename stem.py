@@ -128,7 +128,7 @@ async def run_scraping_logic( pages_per_keyword,created_by,):
     driver = None
     pool = None
     results_output = [] # To return to the UI if needed
-
+    process_id="1234455"
     try:
         pool = await aiomysql.create_pool(**DB_CONFIG)
         keywords_data = await get_keywords(pool)
