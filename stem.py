@@ -8,17 +8,16 @@ import time
 
 from seleniumbase import Driver
 
-
 # ---------------- Install (kept same idea) ----------------
-@st.cache_resource
-def install_browser():
-    try:
-        subprocess.run(["seleniumbase", "install", "chromedriver"], check=True)
-    except Exception as e:
-        st.error(f"Install error: {e}")
+# @st.cache_resource
+# def install_browser():
+#     try:
+#         subprocess.run(["seleniumbase", "install", "chromedriver"], check=True)
+#     except Exception as e:
+#         st.error(f"Install error: {e}")
 
-install_browser()
-
+# install_browser()
+driver = Driver(uc=True, headless=True)
 
 # ---------------- DB CONFIG ----------------
 DB_CONFIG = {
