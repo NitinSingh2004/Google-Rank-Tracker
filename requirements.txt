@@ -5,5 +5,5 @@ fake-useragent
 flask
 aiomysql
 cryptography
-
+seleniumbase
 playwright-stealth
