@@ -1,15 +1,29 @@
-import asyncio
-import uuid
-import random
 import streamlit as st
-
-from seleniumbase import cdp_driver
-from playwright.async_api import async_playwright
+import asyncio
+import random
+import uuid
 import aiomysql
+from playwright.async_api import async_playwright
+from seleniumbase import cdp_driver
 
-# -----------------------------
-# DB CONFIG (UNCHANGED)
-# -----------------------------
+from playwright_stealth import Stealth
+import subprocess
+import pandas as pd
+
+
+@st.cache_resource
+def install_playwright():
+    try:
+        subprocess.run(
+            ["playwright", "install", "chromium"],
+            check=True
+        )
+    except Exception as e:
+        st.error(f"Playwright install error: {e}")
+
+install_playwright()
+
+
 DB_CONFIG = {
     "host": "43.230.202.147",
     "user": "ewayswork_seotoo",
@@ -17,45 +31,64 @@ DB_CONFIG = {
     "db": "ewayswork_seotool",
 }
 
-# -----------------------------
-# STATUS UPDATE
-# -----------------------------
+
+
 async def update_process_status(pool, process_id, status_code):
+    """
+    Status:
+    1 = Running
+    2 = Completed
+    3 = Error
+    """
+
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
+
+            await cur.execute(
+                """
                 UPDATE scrapdata_process
                 SET ProcessStatus = %s
                 WHERE ProcessID = %s
-            """, (status_code, process_id))
+                """,
+                (status_code, process_id)
+            )
+
             await conn.commit()
 
-# -----------------------------
-# INSERT PROCESS
-# -----------------------------
+
 async def insert_process(pool, process_id):
+    """
+    type = 2 => ranking scraper
+    """
+
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
+
+            await cur.execute(
+                """
                 INSERT INTO scrapdata_process
                 (ProcessID, ProcessStatus, type)
                 VALUES (%s, %s, %s)
-            """, (process_id, 1, 2))
+                """,
+                (process_id, 1, 2)
+            )
+
             await conn.commit()
 
-# -----------------------------
-# GET KEYWORDS
-# -----------------------------
+
+
 async def get_keywords(pool):
+
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+
             await cur.execute("""
                 SELECT DISTINCT
                     k.KeywordID,
                     k.KeywordName,
                     p.domain
                 FROM keywords k
-                LEFT JOIN projects p 
+                LEFT JOIN projects p
                     ON p.ProjectID = k.ProjectNo
                 WHERE NOT EXISTS (
                     SELECT 1
@@ -64,154 +97,226 @@ async def get_keywords(pool):
                     AND krh.CreatedAt >= NOW() - INTERVAL 30 DAY
                 )
                 AND domain IS NOT NULL
-                LIMIT 4;
+                LIMIT 20;
             """)
+
             return await cur.fetchall()
 
-# -----------------------------
-# BULK INSERT
-# -----------------------------
+
+
 async def bulk_insert_rankings(pool, data, created_by):
+
     if not data:
         return
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.executemany("""
+
+            await cur.executemany(
+                """
                 INSERT INTO keywords_ranking_history
                 (KeywordNo, Ranking, CreatedAt, CreatedBy)
                 VALUES (%s, %s, NOW(), %s)
-            """, [(k, r, created_by) for (k, r) in data])
+                """,
+                [(k, r, created_by) for (k, r) in data]
+            )
 
             await conn.commit()
 
-# -----------------------------
-# SCRAPING LOGIC (UNCHANGED)
-# -----------------------------
-async def run_scraping_logic(process_id, created_by, pages_per_keyword):
-    driver = None
-    pool = None
+
+async def run_rank_tracker(pages_per_keyword, created_by):
+    results_output = []
+    bulk_data = []
+
+    process_id = str(uuid.uuid4())
+    pool = await aiomysql.create_pool(**DB_CONFIG)
 
     try:
-        pool = await aiomysql.create_pool(**DB_CONFIG)
+        await insert_process(pool, process_id)
         keywords_data = await get_keywords(pool)
-
-        st.write("Fetched Keywords:", keywords_data)
+        st.write(keywords_data)
 
         if not keywords_data:
             await update_process_status(pool, process_id, 2)
-            return
+            return [{"message": "No keywords found"}]
 
-        driver = await cdp_driver.start_async(
-            headless=False,
-            undetected=True,
-            extra_params=["--no-sandbox"]
-        )
+        async with Stealth().use_async(async_playwright()) as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage"
+                ]
+            )
 
-        endpoint_url = driver.get_endpoint_url()
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+            )
 
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(endpoint_url)
-            page = browser.contexts[0].pages[0]
-
-            bulk_data = []
+            page = await context.new_page()
 
             for keyword_id, keyword, target_domain in keywords_data:
+                st.write(f"Searching: {keyword}")
 
                 search_url = f"https://www.google.com/search?q={keyword.replace(' ', '+')}"
-                st.write(f"Searching: {keyword} → {target_domain}")
 
-                await page.goto(search_url, wait_until="domcontentloaded")
+                await page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                await asyncio.sleep(random.uniform(2, 5))
+
+                # --- 1. CAPTCHA CHECK ON INITIAL LOAD ---
+                # Check for Google's common captcha form elements or text
+                is_captcha = await page.locator("#captcha-form, input[name='captcha']").count() > 0
+                page_text = await page.content()
+                
+                if is_captcha or "unusual traffic from your computer network" in page_text:
+                    st.warning(f"Google blocked the request with a CAPTCHA for keyword: {keyword}")
+                    results_output.append({
+                        "keyword": keyword,
+                        "domain": target_domain,
+                        "rank": "CAPTCHA",
+                        "url": "CAPTCHA Encountered"
+                    })
+                    # Optional: break or raise an exception here if you want to stop the entire script 
+                    # because your IP is now flagged. Otherwise, continue to next keyword:
+                    bulk_data.append((keyword_id, 0)) # Or handle DB tracking for blocked keywords
+                    continue 
 
                 current_rank = 1
                 found_rank = None
+                found_url = ""
 
                 for page_num in range(pages_per_keyword):
-
                     await asyncio.sleep(random.uniform(2, 4))
 
-                    results = await page.locator("div[data-hveid], div.g").all()
+                    results = await page.locator("div.g").all()
 
                     for res in results:
-                        item = await res.evaluate("""
-                            (node) => {
-                                const h3 = node.querySelector('h3');
-                                return h3 ? { link: node.querySelector('a')?.href } : null;
-                            }
-                        """)
+                        try:
+                            link = await res.locator("a").first.get_attribute("href")
 
-                        if item and item.get("link"):
-                            link = item["link"]
+                            if link:
+                                if target_domain.lower() in link.lower():
+                                    found_rank = current_rank
+                                    found_url = link
 
-                            if target_domain.lower() in link.lower():
-                                found_rank = current_rank
-                                st.success(f"Rank {current_rank}: {link}")
-                                break
-
-                            current_rank += 1
+                                    results_output.append({
+                                        "keyword": keyword,
+                                        "domain": target_domain,
+                                        "rank": current_rank,
+                                        "url": link
+                                    })
+                                    break
+                                current_rank += 1
+                        except:
+                            pass
 
                     if found_rank:
                         break
 
-                    if page_num < pages_per_keyword - 1:
+                    try:
                         next_btn = page.locator("a#pnnext").first
                         if await next_btn.is_visible():
                             await next_btn.click()
                             await page.wait_for_load_state("domcontentloaded")
+                            
+                            # --- 2. CAPTCHA CHECK ON PAGINATION ---
+                            # Check again in case a captcha triggers when clicking "Next"
+                            if await page.locator("#captcha-form").count() > 0:
+                                st.warning("CAPTCHA triggered on pagination.")
+                                found_rank = "CAPTCHA"
+                                results_output.append({
+                                    "keyword": keyword,
+                                    "domain": target_domain,
+                                    "rank": "CAPTCHA",
+                                    "url": "CAPTCHA Encountered"
+                                })
+                                break
                         else:
                             break
-                    else:
+                    except:
                         break
 
-                bulk_data.append((
-                    keyword_id,
-                    found_rank if found_rank else 51
-                ))
+                # If the loop finished normally without finding the domain or hitting a CAPTCHA
+                if not found_rank:
+                    found_rank = 100
+                    results_output.append({
+                        "keyword": keyword,
+                        "domain": target_domain,
+                        "rank": found_rank,
+                        "url": "Not Found"
+                    })
+                
+                # Fallback ranking tracking for DB integers (e.g., store 0 or 999 if it's a CAPTCHA string)
+                db_rank = 0 if found_rank == "CAPTCHA" else found_rank
+                bulk_data.append((keyword_id, db_rank))
 
-            if bulk_data:
-                await bulk_insert_rankings(pool, bulk_data, created_by)
-
+            await bulk_insert_rankings(pool, bulk_data, created_by)
             await update_process_status(pool, process_id, 2)
-
             await browser.close()
-            st.success("Scraping Completed")
 
     except Exception as e:
-        st.error(f"Scraper Error: {e}")
-        if pool:
-            await update_process_status(pool, process_id, 3)
-
+        await update_process_status(pool, process_id, 3)
+        raise e
     finally:
-        if driver:
-            driver.quit()
-        if pool:
-            pool.close()
-            await pool.wait_closed()
-
-# -----------------------------
-# STREAMLIT UI (REPLACES FASTAPI)
-# -----------------------------
-st.title("Keyword Ranking Scraper")
-
-pages_per_keyword = st.number_input("Pages per keyword", min_value=1, max_value=10, value=5)
-created_by = st.number_input("Created By", value=33)
-
-if st.button("Start Scraping"):
-
-    process_id = str(uuid.uuid4())
-    st.session_state["process_id"] = process_id
-
-    async def runner():
-        pool = await aiomysql.create_pool(**DB_CONFIG)
-        await insert_process(pool, process_id)
         pool.close()
         await pool.wait_closed()
 
-        # IMPORTANT: same argument order as your original bug (kept unchanged)
-        await run_scraping_logic(process_id, created_by, pages_per_keyword)
+    return results_output
+st.set_page_config(
+    page_title="Google Rank Tracker"
+)
 
-    asyncio.run(runner())
+st.title(
+    "Google Ranking Tracker - Playwright Stealth"
+)
+fixed_number = 10
+fixed_number2=33
+pages_per_keyword = st.number_input(
+    "Pages Per Keyword",
+    min_value=1,
+    max_value=10,
+    value=fixed_number,
+    
+)
 
-    st.success(f"Process started: {process_id}")
+created_by = st.number_input(
+    "Created By",
+    value=fixed_number2,
+     disabled=True
+)
+
+if st.button("Start Tracking"):
+
+    with st.spinner("Tracking Rankings..."):
+
+        try:
+
+            results = asyncio.run(
+                run_rank_tracker(
+                    pages_per_keyword,
+                    created_by
+                )
+            )
+
+            st.success("Tracking Completed")
+
+            df = pd.DataFrame(results)
+
+            st.dataframe(
+                df,
+                use_container_width=True
+            )
+
+        except Exception as e:
+
+            st.error(str(e))
+# cahnge this code to selenium cdn driver without changing any functinality and database setup okk
 
   
