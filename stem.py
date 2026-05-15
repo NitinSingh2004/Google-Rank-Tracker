@@ -4,6 +4,8 @@ import random
 import uuid
 import aiomysql
 from playwright.async_api import async_playwright
+from seleniumbase import cdp_driver
+
 from playwright_stealth import Stealth
 import subprocess
 import pandas as pd
@@ -122,150 +124,124 @@ async def bulk_insert_rankings(pool, data, created_by):
             await conn.commit()
 
 
-async def run_rank_tracker(pages_per_keyword, created_by):
-    results_output = []
-    bulk_data = []
-
-    process_id = str(uuid.uuid4())
-    pool = await aiomysql.create_pool(**DB_CONFIG)
+async def run_scraping_logic(process_id, created_by, pages_per_keyword):
+    driver = None
+    pool = None
+    results_output = [] # To return to the UI if needed
 
     try:
-        await insert_process(pool, process_id)
+        pool = await aiomysql.create_pool(**DB_CONFIG)
         keywords_data = await get_keywords(pool)
-        st.write(keywords_data)
 
         if not keywords_data:
             await update_process_status(pool, process_id, 2)
-            return [{"message": "No keywords found"}]
+            return []
 
-        async with Stealth().use_async(async_playwright()) as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage"
-                ]
-            )
+        # START BROWSER USING CDP
+        driver = await cdp_driver.start_async(
+            headless=False,
+            undetected=True,
+            extra_params=["--no-sandbox"]
+        )
 
-            context = await browser.new_context(
-                viewport={"width": 1366, "height": 768},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-            )
+        endpoint_url = driver.get_endpoint_url()
 
-            page = await context.new_page()
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(endpoint_url)
+            page = browser.contexts[0].pages[0]
+
+            bulk_data = []
 
             for keyword_id, keyword, target_domain in keywords_data:
-                st.write(f"Searching: {keyword}")
-
                 search_url = f"https://www.google.com/search?q={keyword.replace(' ', '+')}"
+                print(f"Searching: {keyword} for domain: {target_domain}")
 
-                await page.goto(
-                    search_url,
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-
-                await asyncio.sleep(random.uniform(2, 5))
-
-                # --- 1. CAPTCHA CHECK ON INITIAL LOAD ---
-                # Check for Google's common captcha form elements or text
-                is_captcha = await page.locator("#captcha-form, input[name='captcha']").count() > 0
-                page_text = await page.content()
+                await page.goto(search_url, wait_until="domcontentloaded")
                 
-                if is_captcha or "unusual traffic from your computer network" in page_text:
-                    st.warning(f"Google blocked the request with a CAPTCHA for keyword: {keyword}")
-                    results_output.append({
-                        "keyword": keyword,
-                        "domain": target_domain,
-                        "rank": "CAPTCHA",
-                        "url": "CAPTCHA Encountered"
-                    })
-                    # Optional: break or raise an exception here if you want to stop the entire script 
-                    # because your IP is now flagged. Otherwise, continue to next keyword:
-                    bulk_data.append((keyword_id, 0)) # Or handle DB tracking for blocked keywords
+                # --- CAPTCHA CHECK 1 ---
+                content = await page.content()
+                if "detected unusual traffic" in content or await page.locator("#captcha-form").count() > 0:
+                    print(f"CAPTCHA DETECTED for {keyword}")
+                    bulk_data.append((keyword_id, 0)) # Using 0 to represent CAPTCHA in DB
+                    results_output.append({"keyword": keyword, "rank": "CAPTCHA"})
                     continue 
 
                 current_rank = 1
                 found_rank = None
-                found_url = ""
 
                 for page_num in range(pages_per_keyword):
                     await asyncio.sleep(random.uniform(2, 4))
 
-                    results = await page.locator("div.g").all()
+                    # Select result containers
+                    results = await page.locator("div[data-hveid], div.g").all()
 
                     for res in results:
-                        try:
-                            link = await res.locator("a").first.get_attribute("href")
+                        item = await res.evaluate("""
+                            (node) => {
+                                const h3 = node.querySelector('h3');
+                                return h3 ? { link: node.querySelector('a')?.href } : null;
+                            }
+                        """)
 
-                            if link:
-                                if target_domain.lower() in link.lower():
-                                    found_rank = current_rank
-                                    found_url = link
-
-                                    results_output.append({
-                                        "keyword": keyword,
-                                        "domain": target_domain,
-                                        "rank": current_rank,
-                                        "url": link
-                                    })
-                                    break
-                                current_rank += 1
-                        except:
-                            pass
+                        if item and item.get("link"):
+                            link = item["link"]
+                            if target_domain.lower() in link.lower():
+                                found_rank = current_rank
+                                break
+                            current_rank += 1
 
                     if found_rank:
                         break
 
-                    try:
+                    # NEXT PAGE LOGIC
+                    if page_num < pages_per_keyword - 1:
                         next_btn = page.locator("a#pnnext").first
                         if await next_btn.is_visible():
                             await next_btn.click()
                             await page.wait_for_load_state("domcontentloaded")
                             
-                            # --- 2. CAPTCHA CHECK ON PAGINATION ---
-                            # Check again in case a captcha triggers when clicking "Next"
-                            if await page.locator("#captcha-form").count() > 0:
-                                st.warning("CAPTCHA triggered on pagination.")
+                            # --- CAPTCHA CHECK 2 (During Pagination) ---
+                            if "detected unusual traffic" in await page.content():
                                 found_rank = "CAPTCHA"
-                                results_output.append({
-                                    "keyword": keyword,
-                                    "domain": target_domain,
-                                    "rank": "CAPTCHA",
-                                    "url": "CAPTCHA Encountered"
-                                })
                                 break
                         else:
                             break
-                    except:
+                    else:
                         break
 
-                # If the loop finished normally without finding the domain or hitting a CAPTCHA
-                if not found_rank:
-                    found_rank = 100
-                    results_output.append({
-                        "keyword": keyword,
-                        "domain": target_domain,
-                        "rank": found_rank,
-                        "url": "Not Found"
-                    })
-                
-                # Fallback ranking tracking for DB integers (e.g., store 0 or 999 if it's a CAPTCHA string)
-                db_rank = 0 if found_rank == "CAPTCHA" else found_rank
-                bulk_data.append((keyword_id, db_rank))
+                # Determine final rank to save
+                if found_rank == "CAPTCHA":
+                    final_rank = 0
+                    rank_display = "CAPTCHA"
+                elif found_rank:
+                    final_rank = found_rank
+                    rank_display = found_rank
+                else:
+                    final_rank = 100
+                    rank_display = 100
 
-            await bulk_insert_rankings(pool, bulk_data, created_by)
+                bulk_data.append((keyword_id, final_rank))
+                results_output.append({"keyword": keyword, "rank": rank_display})
+
+            # SAVE DATA
+            if bulk_data:
+                await bulk_insert_rankings(pool, bulk_data, created_by)
+
             await update_process_status(pool, process_id, 2)
             await browser.close()
+            print("Scraping Completed")
 
     except Exception as e:
-        await update_process_status(pool, process_id, 3)
-        raise e
+        print(f"Scraper Error: {e}")
+        if pool:
+            await update_process_status(pool, process_id, 3)
     finally:
-        pool.close()
-        await pool.wait_closed()
-
+        if driver:
+            driver.quit()
+        if pool:
+            pool.close()
+            await pool.wait_closed()
+    
     return results_output
 st.set_page_config(
     page_title="Google Rank Tracker"
