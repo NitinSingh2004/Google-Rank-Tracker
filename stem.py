@@ -3,21 +3,11 @@ import random
 import uuid
 import aiomysql
 import pandas as pd
-import subprocess
+import asyncio
 import time
 
 from seleniumbase import Driver
 
-# ---------------- Install (kept same idea) ----------------
-# @st.cache_resource
-# def install_browser():
-#     try:
-#         subprocess.run(["seleniumbase", "install", "chromedriver"], check=True)
-#     except Exception as e:
-#         st.error(f"Install error: {e}")
-
-# install_browser()
-driver = Driver(uc=True, headless=True)
 
 # ---------------- DB CONFIG ----------------
 DB_CONFIG = {
@@ -28,7 +18,7 @@ DB_CONFIG = {
 }
 
 
-# ---------------- DB FUNCTIONS (UNCHANGED LOGIC) ----------------
+# ---------------- DB FUNCTIONS ----------------
 async def update_process_status(pool, process_id, status_code):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -88,14 +78,14 @@ async def bulk_insert_rankings(pool, data, created_by):
             await conn.commit()
 
 
-# ---------------- MAIN TRACKER (SELENIUM CDP VERSION) ----------------
+# ---------------- MAIN SCRAPER ----------------
 def run_rank_tracker(pages_per_keyword, created_by):
-    import asyncio
-
-    results_output = []
-    bulk_data = []
 
     async def runner():
+
+        results_output = []
+        bulk_data = []
+
         process_id = str(uuid.uuid4())
         pool = await aiomysql.create_pool(**DB_CONFIG)
 
@@ -109,23 +99,23 @@ def run_rank_tracker(pages_per_keyword, created_by):
                 await update_process_status(pool, process_id, 2)
                 return [{"message": "No keywords found"}]
 
-            # ---------------- SELENIUM CDP DRIVER ----------------
+            # ---------------- SELENIUM BASE DRIVER ----------------
             driver = Driver(uc=True, headless=True)
 
             for keyword_id, keyword, target_domain in keywords_data:
+
                 st.write(f"Searching: {keyword}")
 
-                search_url = f"https://www.google.com/search?q={keyword.replace(' ', '+')}"
+                search_url = "https://www.google.com/search?q=" + keyword.replace(" ", "+")
+
                 driver.get(search_url)
-                time.sleep(random.uniform(2, 5))
+                time.sleep(random.uniform(2, 4))
 
                 page_source = driver.page_source
 
                 # CAPTCHA CHECK
-                is_captcha = "captcha" in page_source.lower() or "unusual traffic" in page_source.lower()
-
-                if is_captcha:
-                    st.warning(f"CAPTCHA detected for: {keyword}")
+                if "captcha" in page_source.lower() or "unusual traffic" in page_source.lower():
+                    st.warning(f"CAPTCHA detected: {keyword}")
 
                     results_output.append({
                         "keyword": keyword,
@@ -139,21 +129,20 @@ def run_rank_tracker(pages_per_keyword, created_by):
 
                 current_rank = 1
                 found_rank = None
-                found_url = ""
 
                 for _ in range(pages_per_keyword):
+
                     time.sleep(random.uniform(2, 4))
 
                     results = driver.find_elements("css selector", "div.g")
 
                     for res in results:
                         try:
-                            link_el = res.find_element("css selector", "a")
-                            link = link_el.get_attribute("href")
+                            link = res.find_element("css selector", "a").get_attribute("href")
 
                             if link and target_domain.lower() in link.lower():
+
                                 found_rank = current_rank
-                                found_url = link
 
                                 results_output.append({
                                     "keyword": keyword,
@@ -173,21 +162,22 @@ def run_rank_tracker(pages_per_keyword, created_by):
 
                     # NEXT PAGE
                     try:
-                        next_buttons = driver.find_elements("css selector", "a#pnnext")
+                        next_btn = driver.find_elements("css selector", "a#pnnext")
 
-                        if next_buttons:
-                            next_buttons[0].click()
+                        if next_btn:
+                            next_btn[0].click()
                             time.sleep(2)
 
-                            # CAPTCHA AGAIN CHECK
                             if "captcha" in driver.page_source.lower():
                                 st.warning("CAPTCHA triggered on pagination")
+
                                 results_output.append({
                                     "keyword": keyword,
                                     "domain": target_domain,
                                     "rank": "CAPTCHA",
                                     "url": "CAPTCHA Encountered"
                                 })
+
                                 found_rank = "CAPTCHA"
                                 break
                         else:
@@ -229,21 +219,18 @@ def run_rank_tracker(pages_per_keyword, created_by):
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Google Rank Tracker")
 
-st.title("Google Ranking Tracker - Selenium CDP")
-
-fixed_number = 10
-fixed_number2 = 33
+st.title("Google Ranking Tracker - SeleniumBase CDP")
 
 pages_per_keyword = st.number_input(
     "Pages Per Keyword",
     min_value=1,
     max_value=10,
-    value=fixed_number
+    value=10
 )
 
 created_by = st.number_input(
     "Created By",
-    value=fixed_number2,
+    value=33,
     disabled=True
 )
 
@@ -260,3 +247,5 @@ if st.button("Start Tracking"):
 
         except Exception as e:
             st.error(str(e))
+
+  
