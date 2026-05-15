@@ -318,5 +318,4 @@ if st.button("Start Tracking"):
 
             st.error(str(e))
 # cahnge this code to selenium cdn driver without changing any functinality and database setup okk
-
   
