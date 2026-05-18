@@ -1,129 +1,252 @@
 import streamlit as st
-import asyncio
 import random
-import subprocess
-from seleniumbase import cdp_driver
-from playwright.async_api import async_playwright
+import uuid
+import aiomysql
+import pandas as pd
+import asyncio
+import time
 
-# --- ASYNC RUNTIME PATCH FOR STREAMLIT ---
-# Streamlit already runs an event loop. We use a helper helper to handle nested loops cleanly.
-def run_async_task(coro):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-        
-    if loop and loop.is_running():
-        # If an event loop is already running, schedule the task
-        return loop.run_until_complete(coro)
-    else:
-        return asyncio.run(coro)
-
-# --- ENVIRONMENT BINARY CHECK ---
-@st.cache_resource
-def install_playwright_binaries():
-    try:
-        subprocess.run(["playwright", "install", "chromium"], check=True)
-    except Exception as e:
-        st.error(f"Playwright binary installation warning: {e}")
-
-install_playwright_binaries()
+from seleniumbase import Driver
 
 
-async def scrape_top_3_cakes():
-    driver = None
-    browser = None
-    titles_found = []
-    
-    try:
-        st.write("🔄 Step 1: Initializing undetected cdp_driver backend...")
-        driver = await cdp_driver.start_async(
-            headless=True,  # Must be True for Streamlit Cloud (No GUI)
-            undetected=True,
-            extra_params=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",  # Crucial for resource-constrained Linux containers
-                "--disable-gpu",            # Bypasses graphic rendering demands
-                "--disable-setuid-sandbox"
-            ]
-        )
-        
-        endpoint_url = driver.get_endpoint_url()
-        st.write(f"✅ CDP Endpoint secured: `{endpoint_url}`")
+# ---------------- DB CONFIG ----------------
+DB_CONFIG = {
+    "host": "43.230.202.147",
+    "user": "ewayswork_seotoo",
+    "password": "kCPZk9wkL.1GfoZP",
+    "db": "ewayswork_seotool",
+}
 
-        st.write("🔄 Step 2: Bridging Playwright orchestration...")
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(endpoint_url)
-            
-            # Create an isolated context to inject human-like headers
-            context = await browser.new_context(
-                viewport={"width": 1440, "height": 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
 
-            st.write("🔄 Step 3: Dispatching search request for *'cakes'*...")
-            # Appending localized parameters handles layout variations cleaner on cloud nodes
-            await page.goto("https://www.google.com/search?q=cakes&hl=en&gl=us", wait_until="domcontentloaded")
-            
-            # Human-like observation delay
-            await asyncio.sleep(random.uniform(3.5, 5.0))
-            
-            st.write("🔄 Step 4: Scraping DOM trees...")
-            
-            # Target standard search cards ('div.g') and alternative structural card variations
-            search_cards = await page.locator("div.g, div[data-hveid]").all()
-            
-            for card in search_cards:
-                if len(titles_found) >= 3:
-                    break
-                    
-                try:
-                    # Isolate the main header text tag inside the element block
-                    h3_element = card.locator("h3").first
-                    if await h3_element.is_visible():
-                        title_text = await h3_element.text_content()
-                        title_text = title_text.strip() if title_text else ""
-                        
-                        # Deduplicate entries and filter out auxiliary/people-also-ask layouts
-                        if title_text and title_text not in titles_found and not title_text.startswith(("People also ask", "Images for")):
-                            titles_found.append(title_text)
-                except:
+# ---------------- DB FUNCTIONS ----------------
+async def update_process_status(pool, process_id, status_code):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                UPDATE scrapdata_process
+                SET ProcessStatus = %s
+                WHERE ProcessID = %s
+            """, (status_code, process_id))
+            await conn.commit()
+
+
+async def insert_process(pool, process_id):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                INSERT INTO scrapdata_process
+                (ProcessID, ProcessStatus, type)
+                VALUES (%s, %s, %s)
+            """, (process_id, 1, 2))
+            await conn.commit()
+
+
+async def get_keywords(pool):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT DISTINCT
+                    k.KeywordID,
+                    k.KeywordName,
+                    p.domain
+                FROM keywords k
+                LEFT JOIN projects p
+                    ON p.ProjectID = k.ProjectNo
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM keywords_ranking_history krh
+                    WHERE krh.KeywordNo = k.KeywordID
+                    AND krh.CreatedAt >= NOW() - INTERVAL 30 DAY
+                )
+                AND domain IS NOT NULL
+                LIMIT 20;
+            """)
+            return await cur.fetchall()
+
+
+async def bulk_insert_rankings(pool, data, created_by):
+    if not data:
+        return
+
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany("""
+                INSERT INTO keywords_ranking_history
+                (KeywordNo, Ranking, CreatedAt, CreatedBy)
+                VALUES (%s, %s, NOW(), %s)
+            """, [(k, r, created_by) for (k, r) in data])
+            await conn.commit()
+
+
+# ---------------- MAIN SCRAPER ----------------
+def run_rank_tracker(pages_per_keyword, created_by):
+
+    async def runner():
+
+        results_output = []
+        bulk_data = []
+
+        process_id = str(uuid.uuid4())
+        pool = await aiomysql.create_pool(**DB_CONFIG)
+
+        try:
+            await insert_process(pool, process_id)
+            keywords_data = await get_keywords(pool)
+
+            st.write(keywords_data)
+
+            if not keywords_data:
+                await update_process_status(pool, process_id, 2)
+                return [{"message": "No keywords found"}]
+
+            # ---------------- SELENIUM BASE DRIVER ----------------
+            driver = Driver(uc=True, headless=True)
+
+            for keyword_id, keyword, target_domain in keywords_data:
+
+                st.write(f"Searching: {keyword}")
+
+                search_url = "https://www.google.com/search?q=" + \
+                    keyword.replace(" ", "+")
+
+                driver.get(search_url)
+                time.sleep(random.uniform(2, 4))
+
+                page_source = driver.page_source
+
+                # CAPTCHA CHECK
+                if "captcha" in page_source.lower() or "unusual traffic" in page_source.lower():
+                    st.warning(f"CAPTCHA detected: {keyword}")
+
+                    results_output.append({
+                        "keyword": keyword,
+                        "domain": target_domain,
+                        "rank": "CAPTCHA",
+                        "url": "CAPTCHA Encountered"
+                    })
+
+                    bulk_data.append((keyword_id, 0))
                     continue
 
-            # --- RENDER RESULTS TO UI ---
-            if titles_found:
-                st.success("🎉 Scraping complete!")
-                st.markdown("### 🎂 Top 3 Google Search Result Titles:")
-                for i, title in enumerate(titles_found[:3], start=1):
-                    st.markdown(f"**{i}.** {title}")
-            else:
-                # Check if it was caught by a verification filter
-                page_source = await page.content()
-                if "captcha" in page_source.lower() or "unusual traffic" in page_source.lower():
-                    st.error("⚠️ Google served a CAPTCHA. The Cloud infrastructure IP has been temporarily restricted.")
-                else:
-                    st.warning("⚠️ Page loaded but elements could not be extracted. Google layout might have changed.")
+                current_rank = 1
+                found_rank = None
 
-            await browser.close()
+                for _ in range(pages_per_keyword):
 
-    except Exception as e:
-        st.error(f"❌ Automation Error: {str(e)}")
-        
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
+                    time.sleep(random.uniform(2, 4))
+
+                    results = driver.find_elements("css selector", "div.g")
+
+                    for res in results:
+                        try:
+                            link = res.find_element(
+                                "css selector", "a").get_attribute("href")
+
+                            if link and target_domain.lower() in link.lower():
+
+                                found_rank = current_rank
+
+                                results_output.append({
+                                    "keyword": keyword,
+                                    "domain": target_domain,
+                                    "rank": current_rank,
+                                    "url": link
+                                })
+                                break
+
+                            current_rank += 1
+
+                        except:
+                            pass
+
+                    if found_rank:
+                        break
+
+                    # NEXT PAGE
+                    try:
+                        next_btn = driver.find_elements(
+                            "css selector", "a#pnnext")
+
+                        if next_btn:
+                            next_btn[0].click()
+                            time.sleep(2)
+
+                            if "captcha" in driver.page_source.lower():
+                                st.warning("CAPTCHA triggered on pagination")
+
+                                results_output.append({
+                                    "keyword": keyword,
+                                    "domain": target_domain,
+                                    "rank": "CAPTCHA",
+                                    "url": "CAPTCHA Encountered"
+                                })
+
+                                found_rank = "CAPTCHA"
+                                break
+                        else:
+                            break
+
+                    except:
+                        break
+
+                if not found_rank:
+                    found_rank = 100
+                    results_output.append({
+                        "keyword": keyword,
+                        "domain": target_domain,
+                        "rank": found_rank,
+                        "url": "Not Found"
+                    })
+
+                db_rank = 0 if found_rank == "CAPTCHA" else found_rank
+                bulk_data.append((keyword_id, db_rank))
+
+            driver.quit()
+
+            await bulk_insert_rankings(pool, bulk_data, created_by)
+            await update_process_status(pool, process_id, 2)
+
+        except Exception as e:
+            await update_process_status(pool, process_id, 3)
+            raise e
+
+        finally:
+            pool.close()
+            await pool.wait_closed()
+
+        return results_output
+
+    return asyncio.run(runner())
 
 
-# --- STREAMLIT USER INTERFACE ---
-st.set_page_config(page_title="Cakes Search Test", page_icon="🎂")
-st.title("🎂 Google 'Cakes' Title Scraper")
-st.caption("Utilizes SeleniumBase cdp_driver bridged with native Playwright CDP connection loops.")
+# ---------------- STREAMLIT UI ----------------
+st.set_page_config(page_title="Google Rank Tracker")
 
-if st.button("Execute Search Query", type="primary"):
-    with st.spinner("Processing browser routines inside cloud container..."):
-        # Executes our async block safely inside Streamlit's runtime thread pool
-        run_async_task(scrape_top_3_cakes())
+st.title("Google Ranking Tracker - SeleniumBase CDP")
+
+pages_per_keyword = st.number_input(
+    "Pages Per Keyword",
+    min_value=1,
+    max_value=10,
+    value=10
+)
+
+created_by = st.number_input(
+    "Created By",
+    value=33,
+    disabled=True
+)
+
+if st.button("Start Tracking"):
+
+    with st.spinner("Tracking Rankings..."):
+        try:
+            results = run_rank_tracker(pages_per_keyword, created_by)
+
+            st.success("Tracking Completed")
+
+            df = pd.DataFrame(results)
+            st.dataframe(df, use_container_width=True)
+
+        except Exception as e:
+            st.error(str(e))
