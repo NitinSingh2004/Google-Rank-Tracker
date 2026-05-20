@@ -5,8 +5,10 @@ import aiomysql
 import pandas as pd
 import asyncio
 import time
+import os  # Added for environment variable lookups
 
 from seleniumbase import Driver
+
 
 # ---------------- DB CONFIG ----------------
 DB_CONFIG = {
@@ -15,6 +17,7 @@ DB_CONFIG = {
     "password": "kCPZk9wkL.1GfoZP",
     "db": "ewayswork_seotool",
 }
+
 
 # ---------------- DB FUNCTIONS ----------------
 async def update_process_status(pool, process_id, status_code):
@@ -27,6 +30,7 @@ async def update_process_status(pool, process_id, status_code):
             """, (status_code, process_id))
             await conn.commit()
 
+
 async def insert_process(pool, process_id):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -37,10 +41,10 @@ async def insert_process(pool, process_id):
             """, (process_id, 1, 2))
             await conn.commit()
 
+
 async def get_keywords(pool):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # Note: Verify your schema uses 'KeywordNo' or 'KeywordID' to match your history table structure
             await cur.execute("""
                 SELECT DISTINCT
                     k.KeywordID,
@@ -60,9 +64,11 @@ async def get_keywords(pool):
             """)
             return await cur.fetchall()
 
+
 async def bulk_insert_rankings(pool, data, created_by):
     if not data:
         return
+
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.executemany("""
@@ -72,12 +78,13 @@ async def bulk_insert_rankings(pool, data, created_by):
             """, [(k, r, created_by) for (k, r) in data])
             await conn.commit()
 
+
 # ---------------- MAIN ASYNC RUNNER ----------------
 async def run_rank_tracker_async(pages_per_keyword, created_by):
     results_output = []
     bulk_data = []
+
     process_id = str(uuid.uuid4())
-    
     pool = await aiomysql.create_pool(**DB_CONFIG)
 
     try:
@@ -90,23 +97,40 @@ async def run_rank_tracker_async(pages_per_keyword, created_by):
             await update_process_status(pool, process_id, 2)
             return [{"message": "No keywords found"}]
 
-        # Initialize UC Driver via SeleniumBase
-        driver = Driver(uc=True, headless=True)
+        # ------- SELENIUMBASE FIX FOR RENDER CLOUD -------
+        chrome_binary_location = os.environ.get("CHROME_PATH")
+        
+        if chrome_binary_location:
+            # Running on Render environment (uses unpacked shell binary)
+            driver = Driver(uc=True, headless=True, binary_location=chrome_binary_location)
+        else:
+            # Running locally (falls back to your local native Chrome browser)
+            driver = Driver(uc=True, headless=True)
+        # -------------------------------------------------
 
         for keyword_id, keyword, target_domain in keywords_data:
+
             st.write(f"🔍 Searching: **{keyword}** for domain *{target_domain}*")
-            search_url = "https://www.google.com/search?q=" + keyword.replace(" ", "+")
+
+            search_url = "https://www.google.com/search?q=" + \
+                keyword.replace(" ", "+")
 
             driver.get(search_url)
             time.sleep(random.uniform(2, 4))
 
             page_source = driver.page_source
+
+            # CAPTCHA CHECK
             if "captcha" in page_source.lower() or "unusual traffic" in page_source.lower():
                 st.warning(f"⚠️ CAPTCHA detected on initial search for: {keyword}")
+
                 results_output.append({
-                    "keyword": keyword, "domain": target_domain,
-                    "rank": "CAPTCHA", "url": "CAPTCHA Encountered"
+                    "keyword": keyword,
+                    "domain": target_domain,
+                    "rank": "CAPTCHA",
+                    "url": "CAPTCHA Encountered"
                 })
+
                 bulk_data.append((keyword_id, 0))
                 continue
 
@@ -115,72 +139,83 @@ async def run_rank_tracker_async(pages_per_keyword, created_by):
             captcha_triggered = False
 
             for page in range(pages_per_keyword):
+
                 time.sleep(random.uniform(1.5, 3))
+
                 results = driver.find_elements("css selector", "div.g")
 
                 for res in results:
                     try:
-                        link_element = res.find_elements("css selector", "a")
-                        if not link_element:
+                        link_elements = res.find_elements("css selector", "a")
+                        if not link_elements:
                             continue
-                        link = link_element[0].get_attribute("href")
+                        link = link_elements[0].get_attribute("href")
 
                         if link and target_domain.lower() in link.lower():
                             found_rank = current_rank
+
                             results_output.append({
-                                "keyword": keyword, "domain": target_domain,
-                                "rank": current_rank, "url": link
+                                "keyword": keyword,
+                                "domain": target_domain,
+                                "rank": current_rank,
+                                "url": link
                             })
                             break
-                        
+
                         current_rank += 1
+
                     except Exception:
                         pass
 
                 if found_rank:
-                    break  # Found the domain target, move to next keyword
+                    break
 
-                # If not found on this page, attempt pagination
+                # NEXT PAGE ELEM ASSIGNMENT
                 if page < pages_per_keyword - 1:
                     try:
                         next_btn = driver.find_elements("css selector", "a#pnnext")
+
                         if next_btn:
                             next_btn[0].click()
                             time.sleep(2)
-                            
+
                             if "captcha" in driver.page_source.lower():
                                 st.warning(f"⚠️ CAPTCHA triggered on pagination for: {keyword}")
                                 captcha_triggered = True
                                 break
                         else:
-                            break # No more Google pages available
+                            break  # No more Google pagination available
+
                     except Exception:
                         break
 
-            # Process final status assignment for this keyword loop
+            # Process database entry status flags cleanly
             if captcha_triggered:
                 results_output.append({
-                    "keyword": keyword, "domain": target_domain,
-                    "rank": "CAPTCHA", "url": "CAPTCHA Encountered"
+                    "keyword": keyword,
+                    "domain": target_domain,
+                    "rank": "CAPTCHA",
+                    "url": "CAPTCHA Encountered"
                 })
                 bulk_data.append((keyword_id, 0))
             elif not found_rank:
                 results_output.append({
-                    "keyword": keyword, "domain": target_domain,
-                    "rank": 100, "url": "Not Found"
+                    "keyword": keyword,
+                    "domain": target_domain,
+                    "rank": 100,
+                    "url": "Not Found"
                 })
                 bulk_data.append((keyword_id, 100))
             else:
                 bulk_data.append((keyword_id, found_rank))
 
         driver.quit()
-        
+
         if bulk_data:
             await bulk_insert_rankings(pool, bulk_data, created_by)
         await update_process_status(pool, process_id, 2)
 
     except Exception as e:
-        # Avoid crashing if pool failed to initialize early
         if 'pool' in locals():
             await update_process_status(pool, process_id, 3)
         raise e
@@ -194,6 +229,7 @@ async def run_rank_tracker_async(pages_per_keyword, created_by):
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Google Rank Tracker", layout="wide")
+
 st.title("Google Ranking Tracker - SeleniumBase CDP")
 
 pages_per_keyword = st.number_input(
@@ -210,9 +246,10 @@ created_by = st.number_input(
 )
 
 if st.button("Start Tracking"):
+
     with st.spinner("Tracking Rankings..."):
         try:
-            # Streamlit safe async helper execution engine
+            # Streamlit-safe Event Loop Engine configuration
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -224,6 +261,7 @@ if st.button("Start Tracking"):
             )
 
             st.success("Tracking Completed 🎉")
+
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)
 
