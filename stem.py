@@ -228,4 +228,4 @@ if st.button("Start Tracking"):
             st.dataframe(df, use_container_width=True)
 
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}"))
+            st.error(f"An error occurred: {str(e)}")
